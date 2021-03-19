@@ -8,23 +8,15 @@ import "./interfaces/IComptroller.sol";
 
 contract SmartVaultUltraSlim {
   // contract manager
-  address public immutable manager;
+  address public manager;
 
   // compound and uniswap objects
   IUniswapV2Router02 public uniswapRouter;
   IComptroller public comptroller;
   ICETH public cETH;
 
-  // token utility mappings
-  mapping(string => address) public tokenAddresses;
-  mapping(string => IERC20) public tokenMap;
-  mapping(string => ICERC20) public cTokenMap;
-
   // balances mapping
-  mapping(string => uint256) public balances;
-
-  // ethereum string, used to save on compilation
-  string public symbolETH = "ETH";
+  mapping(address => uint256) public balances;
 
   constructor() {
     // define contract manager
@@ -32,28 +24,45 @@ contract SmartVaultUltraSlim {
   }
 
   function initialize(address UNISWAP_ROUTER_ADDRESS, address COMPTROLLER_ADDRESS, address CETH_ADDRESS) external restricted {
-    // initialize Uniswap Router
+    // initialize Uniswap Router, cannot be modified elsewhere
     uniswapRouter = IUniswapV2Router02(UNISWAP_ROUTER_ADDRESS);
-    // initialize Compound comptroller
+    // initialize Compound comptroller, cannot be modified elsewhere
     comptroller = IComptroller(COMPTROLLER_ADDRESS);
-    // initialize Compound ethereum
+    // initialize Compound ethereum, cannot be modified elsewhere
     cETH = ICETH(CETH_ADDRESS);
   }
 
   function deposit() external payable {
     // update balances on receipt of ETH
-    balances[symbolETH] = balances[symbolETH] + msg.value;
+    balances[address(0x0)] = balances[address(0x0)] + msg.value;
+    addBalance(address(0x0), msg.value);
+  }
+
+  function withdraw(address[] memory tokens, uint[] memory withdrawls, address payable account) external {
+    // update balances on withdraw of token
+    require(balances[address(0x1)] == 0, 'R0');
+    for (uint i=0; i<tokens.length; i++) {
+      require(balances[tokens[i]] >= withdrawls[i], 'R1');
+      subBalance(tokens[i], withdrawls[i]);
+      if (tokens[i] != address(0x0)) {
+        IERC20 token_ = IERC20(tokens[i]);
+        token_.approve(account, withdrawls[i]);
+        token_.transfer(account, withdrawls[i]);
+      } else {
+        (bool sent, ) = account.call{value: withdrawls[i]}("");
+      }
+    }
   }
 
   fallback() external payable {}
 
-  function addBalance(string memory token, uint amount) private {
+  function addBalance(address token, uint amount) private {
     // add to token balance
     balances[token] = balances[token] + amount;
   }
 
-  function subtractBalance(string memory token, uint amount) private {
-    // subtract from token balance
+  function subBalance(address token, uint amount) private {
+    // sub from token balance
     balances[token] = balances[token] - amount;
   }
 
@@ -66,25 +75,10 @@ contract SmartVaultUltraSlim {
   function approveToken(
     address transferAddress,
     uint transferAmount,
-    string memory tokenName
+    address tokenAddress
   ) public restricted {
     // manager can call approve token
-    IERC20 token = tokenMap[tokenName];
-    token.approve(transferAddress, transferAmount);
-  }
-
-  function addToken(
-    string memory token,
-    address tokenAddress,
-    bool isCToken
-  ) external restricted {
-    tokenAddresses[token] = tokenAddress;
-    if (isCToken){
-      cTokenMap[token] = ICERC20(tokenAddress);
-    } else {
-      tokenMap[token] = IERC20(tokenAddress);
-      approveToken(address(uniswapRouter), 2**256 - 1, token);
-    }
+    IERC20(tokenAddress).approve(transferAddress, transferAmount);
   }
 
   function tradePath(
@@ -100,30 +94,29 @@ contract SmartVaultUltraSlim {
 
   function swap(
     uint tradeAmount,
-    string memory fromToken,
-    string memory toToken,
+    address fromToken,
+    address toToken,
     uint deadline
   ) external payable restricted {
     require(balances[fromToken] >= tradeAmount, 'Q1');
+    deadline = block.timestamp + 15000;
     uint[] memory amounts;
-    if (tokenAddresses[fromToken] == tokenAddresses[symbolETH]) {
-      amounts = uniswapRouter.swapExactETHForTokens{value : tradeAmount}(0, tradePath(uniswapRouter.WETH(), tokenAddresses[toToken]), address(this), block.timestamp + 15000);
-    } else if (tokenAddresses[toToken] == tokenAddresses[symbolETH]) {
-      amounts = uniswapRouter.swapExactTokensForETH(tradeAmount, 0, tradePath(tokenAddresses[fromToken], uniswapRouter.WETH()), address(this), deadline);
+    if (fromToken == address(0x0)) {
+      amounts = uniswapRouter.swapExactETHForTokens{value : tradeAmount}(0, tradePath(uniswapRouter.WETH(), toToken), address(this), deadline);
+    } else if (toToken == address(0x0)) {
+      amounts = uniswapRouter.swapExactTokensForETH(tradeAmount, 0, tradePath(fromToken, uniswapRouter.WETH()), address(this), deadline);
     } else {
-      amounts = uniswapRouter.swapExactTokensForTokens(tradeAmount, 0, tradePath(tokenAddresses[fromToken], tokenAddresses[toToken]), address(this), deadline);
+      amounts = uniswapRouter.swapExactTokensForTokens(tradeAmount, 0, tradePath(fromToken, toToken), address(this), deadline);
     }
-    subtractBalance(fromToken, amounts[0]);
+    subBalance(fromToken, amounts[0]);
     addBalance(toToken, amounts[1]);
   }
 
   function addLiquidityPool(
-    string memory tokenA,
-    string memory tokenB,
+    address tokenA,
+    address tokenB,
     uint amountADesired,
     uint amountBDesired,
-    uint amountAMin,
-    uint amountBMin,
     uint deadline
   ) external restricted {
     require(balances[tokenA] >= amountADesired, 'Q2');
@@ -132,97 +125,117 @@ contract SmartVaultUltraSlim {
     uint amountA;
     uint amountB;
     uint liquidity;
-    if (tokenAddresses[tokenA] != tokenAddresses[symbolETH]) {
-      (amountA, amountB, liquidity) = uniswapRouter.addLiquidity(tokenAddresses[tokenA], tokenAddresses[tokenB], amountADesired, amountBDesired, amountAMin, amountBMin, address(this), deadline);
+    if (tokenA != address(0x0)) {
+      (amountA, amountB, liquidity) = uniswapRouter.addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, 0, 0, address(this), deadline);
     } else {
-      (amountA, amountB, liquidity) = uniswapRouter.addLiquidityETH{value : amountADesired}(tokenAddresses[tokenB], amountBDesired, amountBMin, amountAMin, address(this), deadline);
+      (amountA, amountB, liquidity) = uniswapRouter.addLiquidityETH{value : amountADesired}(tokenB, amountBDesired, 0, 0, address(this), deadline);
     }
-    string memory liquidityToken = string(abi.encodePacked(tokenA, '-', tokenB));
-    subtractBalance(tokenA, amountA);
-    subtractBalance(tokenB, amountB);
+    subBalance(tokenA, amountA);
+    subBalance(tokenB, amountB);
+    address liquidityToken = address(uint160(uint256(keccak256(abi.encodePacked(tokenA, tokenB)))));
     addBalance(liquidityToken, liquidity);
   }
 
   function removeLiquidityPool(
-    string memory tokenA,
-    string memory tokenB,
+    address tokenA,
+    address tokenB,
     uint liquidity,
-    uint amountAMin,
-    uint amountBMin,
     uint deadline
-  ) external restricted {
-    string memory liquidityToken = string(abi.encodePacked(tokenA, '-', tokenB));
+  ) external payable restricted {
+    address liquidityToken = address(uint160(uint256(keccak256(abi.encodePacked(tokenA, tokenB)))));
     require(balances[liquidityToken] >= liquidity, 'Q4');
     deadline = block.timestamp + 15000;
     uint amountA;
     uint amountB;
-    if (tokenAddresses[tokenA] != tokenAddresses[symbolETH]) {
-      (amountA, amountB) = uniswapRouter.removeLiquidity(tokenAddresses[tokenA], tokenAddresses[tokenB], liquidity, amountAMin, amountBMin, address(this), deadline);
+    if (tokenA != address(0x0)) {
+      (amountA, amountB) = uniswapRouter.removeLiquidity(tokenA, tokenB, liquidity, 0, 0, address(this), deadline);
     } else{
-      (amountA, amountB) = uniswapRouter.removeLiquidityETH(tokenAddresses[tokenB], liquidity, amountBMin, amountAMin, address(this), deadline);
+      (amountA, amountB) = uniswapRouter.removeLiquidityETH(tokenB, liquidity, 0, 0, address(this), deadline);
     }
     addBalance(tokenA, amountA);
     addBalance(tokenB, amountB);
-    subtractBalance(liquidityToken, liquidity);
+    subBalance(liquidityToken, liquidity);
   }
 
   function lend(
-    string memory tokenName,
-    string memory cTokenName,
+    address token,
+    address cToken,
     uint toLend
   ) external restricted {
     // Mint cTokens
-    require(balances[tokenName] >= toLend, 'Q5');
-    if (tokenAddresses[tokenName] != tokenAddresses[symbolETH]) {
-      ICERC20 cToken = cTokenMap[cTokenName];
-      uint prevBalance = cToken.balanceOf(address(this));
-      uint mintResult = cToken.mint(toLend);
-      uint currBalance = cToken.balanceOf(address(this));
-      (uint256 error2, uint256 liquidity, uint256 shortfall) = comptroller.getAccountLiquidity(address(this));
+    require(balances[token] >= toLend, 'Q5');
+    if (token != address(0x0)) {
+      ICERC20 cToken_ = ICERC20(cToken);
+      uint prevBalance = cToken_.balanceOf(address(this));
+      cToken_.mint(toLend);
+      subBalance(token, toLend);
+      addBalance(cToken, cToken_.balanceOf(address(this))-prevBalance);
     } else {
       uint prevBalance = cETH.balanceOf(address(this));
       cETH.mint{value : toLend}();
-      uint currBalance = cETH.balanceOf(address(this));
-      (uint256 error2, uint256 liquidity, uint256 shortfall) = comptroller.getAccountLiquidity(address(this));
-    }
-  }
-
-  function borrow(
-    string memory tokenName,
-    string memory cTokenName,
-    uint toBorrow
-  ) external {
-    // TODO : Add collateral check
-    if (tokenAddresses[tokenName] != tokenAddresses[symbolETH]) {
-      ICERC20 cToken = cTokenMap[cTokenName];
-      // Borrow token
-      uint prevBalance = tokenMap[tokenName].balanceOf(address(this));
-      cToken.borrow(toBorrow);
-      uint currBalance = tokenMap[tokenName].balanceOf(address(this));
-    } else {
-      uint prevBalance = address(this).balance;
-      cETH.borrow(toBorrow);
-      uint currBalance = address(this).balance;
+      subBalance(token, toLend);
+      addBalance(cToken, cETH.balanceOf(address(this))-prevBalance);
     }
   }
 
   function redeem(
-    string memory tokenName,
-    string memory cTokenName,
+    address token,
+    address cToken,
     uint toRedeem
-  ) external {
+  ) external restricted {
+    require(balances[cToken] >= toRedeem, 'Q6');
     // TODO : Add redemption check
-    if (tokenAddresses[tokenName] != tokenAddresses[symbolETH]) {
-      ICERC20 cToken = cTokenMap[cTokenName];
+    if (token != address(0x0)) {
       // Redeem for underlying token
-      uint prevBalance = tokenMap[tokenName].balanceOf(address(this));
-      cToken.redeem(toRedeem);
-      uint currBalance = tokenMap[tokenName].balanceOf(address(this));
+      IERC20 token_ = IERC20(token);
+      uint prevBalance = token_.balanceOf(address(this));
+      ICERC20(cToken).redeem(toRedeem);
+      subBalance(token, toRedeem);
+      addBalance(cToken, token_.balanceOf(address(this))-prevBalance);
     } else {
       // Redeem for underlying ETH
       uint prevBalance = address(this).balance;
       cETH.redeem(toRedeem);
-      uint currBalance = address(this).balance;
+      subBalance(address(0x0), toRedeem);
+      addBalance(cToken, address(this).balance-prevBalance);
+    }
+  }
+
+  function borrow(
+    address token,
+    address cToken,
+    uint toBorrow
+  ) external restricted {
+    // TODO : Add collateral check (?), no rather do offline~
+    address debtToken = address(uint160(uint256(keccak256(abi.encodePacked(token, address(0x1))))));
+    if (token != address(0x0)) {
+      // Borrow token
+      ICERC20(cToken).borrow(toBorrow);
+      addBalance(debtToken, toBorrow);
+      addBalance(address(0x1), toBorrow);
+    } else {
+      cETH.borrow(toBorrow);
+      addBalance(debtToken, toBorrow);
+      addBalance(address(0x1), toBorrow);
+    }
+  }
+
+  function repay(
+    address token,
+    address cToken,
+    uint toRepay
+  ) external restricted {
+    address debtToken = address(uint160(uint256(keccak256(abi.encodePacked(token, address(0x1))))));
+    require(balances[debtToken] >= toRepay, 'Q7');
+    if (token != address(0x0)) {
+      // Borrow token
+      ICERC20(cToken).repayBorrow(toRepay);
+      subBalance(debtToken, toRepay);
+      subBalance(address(0x1), toRepay);
+   } else {
+      cETH.repayBorrow(toRepay);
+      subBalance(debtToken, toRepay);
+      subBalance(address(0x1), toRepay);
     }
   }
 }

@@ -1,3 +1,4 @@
+pragma solidity ^0.8.0;
 interface ICETH {
     // cETH
     function mint() external payable;
@@ -6,6 +7,7 @@ interface ICETH {
     function redeem(uint) external returns (uint);
     function redeemUnderlying(uint) external returns (uint);
     function borrow(uint) external returns (uint);
+    function repayBorrow(uint repayAmount) external returns (uint);
 
     // ctoken
     function transfer(address dst, uint amount) external returns (bool);
